@@ -1,0 +1,9 @@
+{
+    "python.defaultInterpreterPath": "C:/Users/1_HOME/2_Meenakshi/2_NOW_UNIVISION/pythonProject/PICKLEBALL/to/pkb_env/Scripts/python.exe",
+
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}",
+        "${workspaceFolder}/court_detector",
+        "${workspaceFolder}/court_detector/src"
+    ]
+}
