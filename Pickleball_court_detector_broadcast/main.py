@@ -5,15 +5,16 @@ from pathlib import Path
 # --------------------------------------------------
 # Geometry
 # --------------------------------------------------
-from .geometry.hough_detector import detect_hough_lines
 from .geometry.line_classification import split_and_filter_lines
-from .geometry.near_side_homography import fit_near_side_homography
-from .geometry.project_template import project_near_side_template
+from .geometry.near_side_trapezoid import detect_near_side_trapezoid
+from .geometry.trapezoid_tracker import TrapezoidTracker
+from .geometry.weighted_hough import detect_weighted_hough_lines
 
 # --------------------------------------------------
 # Preprocessing
 # --------------------------------------------------
-from .preprocessing.reinforce_lines import reinforce_lines
+from .preprocessing.dynamic_filter import dynamic_preprocess
+from .preprocessing.line_confidence import compute_line_confidence
 
 # --------------------------------------------------
 # Video utils
@@ -23,8 +24,12 @@ from Pickleball_court_detector_broadcast.utils.video_utils import (
     normalize_lighting
 )
 
+# --------------------------------------------------
+# Paths
+# --------------------------------------------------
 BASE = Path(__file__).parent
 VIDEO_PATH = BASE / "input" / "pkb_court.mp4"
+
 STAGES = BASE / "stages"
 FINAL  = BASE / "final"
 
@@ -33,87 +38,53 @@ FINAL.mkdir(exist_ok=True)
 
 
 def main():
-    # --------------------------------------------------
-    # 0️⃣ Select frame
-    # --------------------------------------------------
-    GOOD_FRAME_ID = 40
-    frame = None
 
-    for fid, f in video_frame_generator(VIDEO_PATH):
-        if fid == GOOD_FRAME_ID:
-            frame = f
+    tracker = TrapezoidTracker(window=7)
+
+    for fid, frame in video_frame_generator(VIDEO_PATH):
+
+        # 1️⃣ Normalize lighting
+        frame = normalize_lighting(frame)
+
+        # 2️⃣ Dynamic preprocessing
+        gray, filtered, edges = dynamic_preprocess(frame)
+
+        # 3️⃣ Line-confidence heatmap
+        confidence = compute_line_confidence(gray, edges)
+
+        # 4️⃣ Guided Hough transform
+        lines, weighted_edges = detect_weighted_hough_lines(edges, confidence)
+        if lines is None:
+            continue
+
+        # Save representative stages once
+        if fid == 0:
+            cv2.imwrite(str(STAGES / "01_gray.jpg"), gray)
+            cv2.imwrite(str(STAGES / "02_filtered.jpg"), filtered)
+            cv2.imwrite(str(STAGES / "03_edges.jpg"), edges)
+            cv2.imwrite(str(STAGES / "04_line_confidence.jpg"), confidence)
+            cv2.imwrite(str(STAGES / "05_weighted_edges.jpg"), weighted_edges)
+
+        lines = lines[:, 0, :]
+        print(f"[DEBUG] Frame {fid} | lines: {lines.shape[0]}")
+
+        # 5️⃣ Line classification (near-side)
+        horiz, oblique = split_and_filter_lines(lines, frame.shape)
+        if len(horiz) < 1 or len(oblique) < 2:
+            continue
+
+        # 6️⃣ Near-side trapezoid detection
+        trapezoid = detect_near_side_trapezoid(horiz, oblique, frame.shape)
+        tracker.update(trapezoid)
+
+        stable = tracker.get_stable()
+        if stable is not None:
+            vis = frame.copy()
+            cv2.polylines(vis, [stable], True, (0, 255, 0), 4)
+            cv2.imwrite(str(FINAL / "near_side_trapezoid.png"), vis)
+
+            print("✅ Stable near-side trapezoid detected")
             break
-
-    if frame is None:
-        raise RuntimeError("Good frame not found")
-
-    frame = normalize_lighting(frame)
-    cv2.imwrite(str(STAGES / "00_frame.jpg"), frame)
-
-    # --------------------------------------------------
-    # 1️⃣ Dynamic preprocessing
-    # --------------------------------------------------
-    from .preprocessing.dynamic_filter import dynamic_preprocess
-
-    gray, filtered, edges = dynamic_preprocess(frame)
-
-    cv2.imwrite(str(STAGES / "01_gray.jpg"), gray)
-    cv2.imwrite(str(STAGES / "02_filtered.jpg"), filtered)
-    cv2.imwrite(str(STAGES / "03_edges.jpg"), edges)
-
-    # --------------------------------------------------
-    # 3️⃣ Hough lines
-    # --------------------------------------------------
-    lines = detect_hough_lines(edges)
-    if lines is None:
-        raise RuntimeError("No lines detected")
-
-    lines = lines[:, 0, :]
-    print("[DEBUG] lines:", lines.shape)
-
-    # --------------------------------------------------
-    # 4️⃣ Line classification
-    # --------------------------------------------------
-    horiz, oblique = split_and_filter_lines(lines, frame.shape)
-
-    if len(horiz) < 1 or len(oblique) < 2:
-        raise RuntimeError("Insufficient near-side lines")
-
-    # Baseline = lowest horizontal
-    baseline = max(horiz, key=lambda l: (l[1] + l[3]) / 2)
-
-    # Side lines
-    left_sideline  = min(oblique, key=lambda l: min(l[0], l[2]))
-    right_sideline = max(oblique, key=lambda l: max(l[0], l[2]))
-
-    # --------------------------------------------------
-    # 5️⃣ Debug visualization
-    # --------------------------------------------------
-    dbg = frame.copy()
-    cv2.line(dbg, baseline[:2], baseline[2:], (0, 0, 255), 4)
-    cv2.line(dbg, left_sideline[:2], left_sideline[2:], (255, 0, 0), 4)
-    cv2.line(dbg, right_sideline[:2], right_sideline[2:], (255, 0, 0), 4)
-    cv2.imwrite(str(STAGES / "03_selected_lines.jpg"), dbg)
-
-    # --------------------------------------------------
-    # 6️⃣ Homography
-    # --------------------------------------------------
-    H, _ = fit_near_side_homography(
-        baseline,
-        left_sideline,
-        right_sideline
-    )
-
-    if H is None:
-        raise RuntimeError("Near-side homography failed")
-
-    # --------------------------------------------------
-    # 7️⃣ Project stabilized court
-    # --------------------------------------------------
-    result = project_near_side_template(frame, H)
-    cv2.imwrite(str(FINAL / "near_side_court.png"), result)
-
-    print("✅ Near-side pickleball court detected & aligned")
 
 
 if __name__ == "__main__":
