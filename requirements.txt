@@ -1,0 +1,9 @@
+```txt
+numpy>=1.21
+opencv-python>=4.8
+1.Update the input video filename in `main.py` if needed  
+2. Run the pipeline:
+
+```bash
+python main.py
+The aligned half-court overlay video will be saved to the final/ directory.
